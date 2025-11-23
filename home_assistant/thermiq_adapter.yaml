@@ -1,0 +1,58 @@
+template:
+  - sensor:
+      # --- Temperaturer (ThermIQ Standardnamn) ---
+      
+      - name: "thermiq_outdoor_t"
+        unit_of_measurement: "°C"
+        state: "{{ states('sensor.thermia_raw_outdoor') }}"
+
+      - name: "thermiq_supply_t"
+        unit_of_measurement: "°C"
+        state: "{{ states('sensor.thermia_raw_supply_line') }}"
+
+      - name: "thermiq_return_t"
+        unit_of_measurement: "°C"
+        state: "{{ states('sensor.thermia_raw_return_line') }}"
+
+      - name: "thermiq_hot_water_t"
+        unit_of_measurement: "°C"
+        state: "{{ states('sensor.thermia_raw_hotwater') }}"
+
+      # Rumstemp (Kombinerar Heltal + Decimalregister)
+      - name: "thermiq_room_t"
+        unit_of_measurement: "°C"
+        state: >
+          {% set heltal = states('sensor.thermia_raw_indoor_disp') | float(0) %}
+          {% set decimal = states('sensor.thermia_raw_indoor_dec') | float(0) %}
+          {{ heltal + (decimal / 10) }}
+
+      - name: "thermiq_integr_s"
+        state: "{{ states('sensor.thermia_raw_integral') }}"
+
+  # --- Status (Avkodar Bitmask från Register 16) ---
+  
+  - binary_sensor:
+      # Kompressor (Bit 1)
+      - name: "thermiq_status_comp"
+        state: "{{ (states('sensor.thermia_raw_status_16')|int(0) | bitwise_and(2)) > 0 }}"
+        icon: mdi:heat-pump
+
+      # Varmvatten (Bit 3)
+      - name: "thermiq_status_hgw" 
+        state: "{{ (states('sensor.thermia_raw_status_16')|int(0) | bitwise_and(8)) > 0 }}"
+        icon: mdi:water-boiler
+
+      # Cirkulationspump (Bit 2)
+      - name: "thermiq_status_cirk"
+        state: "{{ (states('sensor.thermia_raw_status_cirk')|int(0) | bitwise_and(4)) > 0 }}"
+        icon: mdi:pump
+
+      # Tillsats (Bit 7)
+      - name: "thermiq_status_aux"
+        state: "{{ (states('sensor.thermia_raw_status_16')|int(0) | bitwise_and(128)) > 0 }}"
+        icon: mdi:flash
+
+      # Brinepump (Bit 0)
+      - name: "thermiq_status_brine"
+        state: "{{ (states('sensor.thermia_raw_status_16')|int(0) | bitwise_and(1)) > 0 }}"
+        icon: mdi:pump

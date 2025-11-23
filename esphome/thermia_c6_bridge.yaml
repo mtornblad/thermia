@@ -1,0 +1,186 @@
+substitutions:
+  name: "thermia-bridge-c6"
+  friendly_name: "Thermia Wireless Bridge"
+
+  # ==========================================================
+  # VÄLJ SCENARIO HÄR (Kommentera in RÄTT block)
+  # ==========================================================
+
+  # --- ALTERNATIV A: SCENARIO 2 (Piggyback / Stacking) ---
+  # RA4M1 kör Hardware Serial (TX=D6, RX=D7).
+  # Fysisk koppling vid stacking: D6<->D6, D7<->D7.
+  # C6 Konfiguration:
+  # - TX Pin: D7 (Skickar till RA4M1 RX)
+  # - RX Pin: D6 (Lyssnar på RA4M1 TX)
+  uart_tx_pin: D7
+  uart_rx_pin: D6
+
+  # --- ALTERNATIV B: SCENARIO 3 (Extern RS485 Modul) ---
+  # Via extern RS485-sköld (Seeed standard).
+  # Modulens TX är D5, RX är D4.
+  # Flödeskontroll på D2 måste aktiveras i koden nedan.
+  # uart_tx_pin: D5
+  # uart_rx_pin: D4
+
+  # ==========================================================
+
+esphome:
+  name: ${name}
+  platform: ESP32
+  board: seeed_xiao_esp32c6 
+  
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Thermia-Fallback"
+    password: !secret ap_password
+
+# openthread:
+#   dataset: !secret ot_dataset
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+logger:
+  level: DEBUG
+
+# --- UART Inställningar ---
+uart:
+  id: uart_bus
+  tx_pin: ${uart_tx_pin}
+  rx_pin: ${uart_rx_pin}
+  baud_rate: 9600
+  stop_bits: 1
+  
+  # OBS: Om du kör Scenario 3 (RS485 Modul), avkommentera raden nedan!
+  # flow_control_pin: D2
+
+modbus:
+  id: modbus_hub
+  uart_id: uart_bus
+  
+modbus_controller:
+  - id: thermia_device
+    address: 10
+    modbus_id: modbus_hub
+    setup_priority: -10
+    update_interval: 10s
+
+# --- Sensorer ---
+sensor:
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "thermiq_outdoor_t" 
+    address: 0
+    register_type: holding
+    value_type: S_WORD 
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    filters:
+      - multiply: 1.0
+
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "thermiq_supply_t"
+    address: 5
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "thermiq_hot_water_t"
+    address: 7
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "thermiq_integr_s"
+    address: 25
+    register_type: holding
+    value_type: S_WORD
+
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    internal: true 
+    id: room_int
+    address: 1
+    register_type: holding
+    value_type: S_WORD
+
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    internal: true
+    id: room_dec
+    address: 2
+    register_type: holding
+    value_type: S_WORD
+
+  - platform: template
+    name: "thermiq_room_t"
+    unit_of_measurement: "°C"
+    lambda: |-
+      return id(room_int).state + (id(room_dec).state / 10.0);
+
+  # Status Register
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    id: status_reg
+    address: 16
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+
+  # Externa DS18B20
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "Thermia Extra Sensor 1"
+    address: 1000
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01 
+
+# --- Styrning ---
+number:
+  - platform: modbus_controller
+    modbus_controller_id: thermia_device
+    name: "Thermia Set Curve"
+    address: 52
+    register_type: holding
+    value_type: S_WORD
+    min_value: 20
+    max_value: 60
+    mode: box
+
+# --- Statusflaggor ---
+binary_sensor:
+  - platform: template
+    name: "thermiq_status_comp"
+    lambda: |-
+      int val = (int)id(status_reg).state;
+      return (val & 2);
+
+  - platform: template
+    name: "thermiq_status_hgw"
+    lambda: |-
+      int val = (int)id(status_reg).state;
+      return (val & 8);
+      
+  - platform: template
+    name: "thermiq_status_cirk"
+    lambda: |-
+      int val = (int)id(status_reg).state;
+      return (val & 4);
+      
+  - platform: template
+    name: "thermiq_status_aux"
+    lambda: |-
+      int val = (int)id(status_reg).state;
+      return (val & 128);
