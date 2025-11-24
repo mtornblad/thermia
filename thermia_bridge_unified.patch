@@ -1,0 +1,134 @@
+--- a/esphome_config/components/pic_ota/pic_ota.cpp
++++ b/esphome_config/components/pic_ota/pic_ota.cpp
+@@ -0,0 +1,154 @@
++#include "pic_ota.h"
++#include "esphome/core/log.h"
++#include "esphome/core/helpers.h"
++#include "esphome/components/filesystem/filesystem.h"
++
++static const char *const TAG = "pic_ota";
++using namespace esphome::pic_ota;
++
++void PicOTA::setup() {
++  // Initiera GPIO-pinnarna som outputs och sätt initiala låga/höga nivåer
++  mclr_pin_->setup();
++  pgc_pin_->setup();
++  pgd_pin_->setup();
++
++  // Sätt alla pins till neutralt läge
++  mclr_pin_->digital_write(false); // MCLR Låg (Reset/Run-läge)
++  pgc_pin_->digital_write(false);
++  pgd_pin_->digital_write(false);
++  
++  ESP_LOGCONFIG(TAG, "PIC OTA Programmer initialiserad.");
++}
++
++void PicOTA::dump_config() {
++  ESP_LOGCONFIG(TAG, "PIC OTA Programmer:");
++  LOG_PIN("  MCLR Pin: ", mclr_pin_);
++  LOG_PIN("  PGC Pin: ", pgc_pin_);
++  LOG_PIN("  PGD Pin: ", pgd_pin_);
++  ESP_LOGCONFIG(TAG, "  Standard Firmware Fil: %s", pic_firmware_file_.c_str());
++}
++
++/**
++ * @brief Kontrollerar om PIC-versionen matchar den i HEX-filen och triggar OTA.
++ * Denna funktion anropas från Modbus-pollingen.
++ */
++void PicOTA::check_for_update(uint8_t current_major, uint8_t current_minor) {
++    static bool run_once = false;
++    if (run_once) return; // Kör bara vid uppstart
++    run_once = true;
++    
++    uint16_t hex_version = get_firmware_version_from_hex(pic_firmware_file_);
++    uint8_t hex_major = (hex_version >> 8) & 0xFF;
++    uint8_t hex_minor = hex_version & 0xFF;
++    
++    ESP_LOGD(TAG, "PIC version: %d.%d, HEX version: %d.%d", current_major, current_minor, hex_major, hex_minor);
++
++    if (hex_major > current_major || (hex_major == current_major && hex_minor > current_minor)) {
++        ESP_LOGW(TAG, "PIC firmware mismatch! Starting OTA from %d.%d to %d.%d.", 
++                 current_major, current_minor, hex_major, hex_minor);
++        program_flash(pic_firmware_file_);
++    } else {
++        ESP_LOGI(TAG, "PIC firmware is up to date (%d.%d).", current_major, current_minor);
++    }
++}
++
++// --- ICSP Bit-Banging Funktioner (Platshållare) ---
++
++void PicOTA::icsp_write(uint8_t instruction, uint16_t data) {
++  // Sätt PGD till output för att skriva
++  pgd_pin_->set_pin_mode(gpio::FLAG_OUTPUT);
++
++  // ... Bit-banging implementation ...
++}
++
++uint16_t PicOTA::icsp_read(uint8_t instruction) {
++  uint16_t data = 0;
++  // Sätt PGD till output för instruktion, input för läsning
++  pgd_pin_->set_pin_mode(gpio::FLAG_OUTPUT);
++
++  // ... Bit-banging implementation ...
++  
++  return data;
++}
++
++void PicOTA::icsp_set_programming_mode(bool enable) {
++  if (enable) {
++    ESP_LOGI(TAG, "Aktiverar programmeringsläge...");
++    // 1. PGC och PGD LÅG
++    pgc_pin_->digital_write(false);
++    pgd_pin_->digital_write(false);
++    // 2. Försätt MCLR i 5V (Hög nivå via transistor)
++    mclr_pin_->digital_write(true);
++    // 3. Vänta T_entertyp (typiskt 100ms)
++    delay(100); 
++  } else {
++    ESP_LOGI(TAG, "Avslutar programmeringsläge...");
++    mclr_pin_->digital_write(false); // Sätt MCLR LÅG igen (Run-läge/Reset)
++    delay(1); 
++  }
++}
++
++/**
++ * @brief Simulerad funktion för att extrahera version från en HEX-fil.
++ * Detta kräver en komplett HEX-parser för att hitta versionens minnesadress.
++ * @param filename Filnamn på HEX-filen.
++ * @return 16-bitars version (Major << 8 | Minor).
++ */
++uint16_t PicOTA::get_firmware_version_from_hex(const std::string& filename) {
++    // *** Denna funktion måste implementeras fullständigt. ***
++    // Den ska:
++    // 1. Öppna och läsa filen i Intel HEX format.
++    // 2. Parsa raderna för att hitta den minnesadress där REG_FW_MAJOR_VERSION och REG_FW_MINOR_VERSION lagras.
++    // 3. Extrahera och returnera värdet.
++    
++    // För nu, returnera en hårdkodad testversion
++    return (2 << 8) | 0; // Anta version 2.0 i HEX-filen för test
++}
++
++bool PicOTA::program_flash(const std::string& filename) {
++  if (!filesystem::is_initialized()) {
++    ESP_LOGE(TAG, "Filysystemet är inte initialiserat!");
++    return false;
++  }
++  
++  auto file = filesystem::open(filename.c_str(), "r");
++  if (!file) {
++    ESP_LOGE(TAG, "Kunde inte öppna firmware-fil: %s", filename.c_str());
++    return false;
++  }
++  
++  // --- Huvudprogrammeringslogik ---
++  // 1. icsp_set_programming_mode(true)
++  // 2. Radera chip
++  // 3. Läs HEX-filen rad för rad och konvertera till ICSP-kommandon (LOAD_DATA, INC_ADDRESS, PROGRAM_WORD)
++  // 4. icsp_set_programming_mode(false)
++  
++  ESP_LOGW(TAG, "PROGRAMMERING EJ IMPLEMENTERAD: Använder platshållarlogik.");
++  ESP_LOGW(TAG, "Full ICSP/HEX-parser krävs här.");
++  
++  file.close();
++  return true; 
++}
