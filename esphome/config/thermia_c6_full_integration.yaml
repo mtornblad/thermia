@@ -1,0 +1,180 @@
+# ESPHome konfiguration för Thermia C6 Bridge (Baseboard v30)
+# Anpassad för Modbus-adressering i PIC18F47Q43 (Slave ID 1).
+
+esphome:
+  name: thermia-c6-bridge
+  friendly_name: Thermia C6 Bridge
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Ersätt med dina egna nätverksinställningar
+wifi:
+  ssid: "Ditt_WiFi_Nätverk"
+  password: "Ditt_Lösenord"
+  manual_ip:
+    static_ip: 192.168.1.200
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+
+logger:
+ota:
+api:
+  encryption:
+    key: "din_unika_krypteringsnyckel" # Ändra denna!
+
+# ----------------------------------------------------
+# UART & MODBUS KONFIGURATION
+# ----------------------------------------------------
+uart:
+  id: uart_modbus
+  baud_rate: 9600
+  tx_pin: GPIO17 # Exempelpins - XIAO TX till PIC RX (RC1 via Level Shifter)
+  rx_pin: GPIO16 # Exempelpins - XIAO RX till PIC TX (RC0 via Level Shifter)
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+modbus:
+  id: modbus_main
+  uart_id: uart_modbus
+  address: 1
+  update_interval: 5s
+
+# ----------------------------------------------------
+# PIC OTA UPPDATERING (Custom Component)
+# ----------------------------------------------------
+external_components:
+  - source:
+      type: local
+      path: components/pic_ota
+    components: [pic_ota]
+
+pic_ota:
+  id: pic_ota_component
+  mclr_pin: GPIO2  # Exempelpinne, ansluten till PIC RA3 (MCLR) via MOSFET
+  pgc_pin: GPIO3   # Exempelpinne, ansluten till PIC RB6 (PGC) via Level Shifter
+  pgd_pin: GPIO4   # Exempelpinne, ansluten till PIC RB7 (PGD) via Level Shifter
+  pic_firmware_file: "pic_firmware.hex" # Filnamn på PIC firmware
+  # Ingen update_interval. Updatering triggas vid start om version mismatch.
+
+
+# ----------------------------------------------------
+# MODBUS SENSORER (READ ONLY - Input Registers: 0x1XXX)
+# ----------------------------------------------------
+modbus_controller:
+  id: pic_sensor_controller
+  modbus_id: modbus_main
+  setup_delay: 2s
+  update_interval: 5s
+
+  # 1. TEMPERATURER FRÅN PUMPENS I2C-LOGG (ThermiaIQ Register 0-116)
+  # Modbus adress: 0x00 (I2C Reg 0)
+  read_input_register:
+    id: thermia_temp_read_block
+    address: 0x00 # Startar vid PIC Register 0 (REG_T_OUTDOOR_HI)
+    register_count: 15 # Läs 15 UWORDs (30 bytes)
+
+  sensor:
+    # 0x00 - Ute Temperatur (Thermia Reg 0/1)
+    - platform: template
+      name: "Ute Temperatur (Loggad)"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      # results[0] motsvarar PIC Reg 0 (HI-byte) + Reg 1 (LO-byte) som ett 16-bitars WORD
+      lambda: 'return (float)id(thermia_temp_read_block).results[0] / 10.0;' 
+
+    # 0x02 - Rumstemp (Thermia Reg 2/3)
+    - platform: template
+      name: "Inne Temperatur (Loggad)"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      lambda: 'return (float)id(thermia_temp_read_block).results[2] / 10.0;'
+      
+  # 2. RIKTIGA SENSORVÄRDEN (PIC Interna Register 200+)
+  read_input_register:
+    id: internal_sensor_block
+    address: 0x00C8 # Startar vid PIC Register 200 (200 decimal = C8 hex)
+    register_count: 5 # Läs 5 UWORD (DS18B20 + NTC Outdoor + NTC Indoor + Raw)
+    
+  # 0x00C8 (Reg 200/201) - OneWire DS18B20
+  - platform: template
+    name: "DS18B20 Temp (Riktig)"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    # Värdet är °C * 100
+    lambda: 'return (float)id(internal_sensor_block).results[0] / 100.0;'
+    
+  # 0x00CA (Reg 202/203) - ADC NTC Utegivare
+  - platform: template
+    name: "NTC Ute Temp (Riktig/ADC)"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    # Värdet är °C * 100
+    lambda: 'return (float)id(internal_sensor_block).results[1] / 100.0;'
+
+  # 0x00CC (Reg 204/205) - ADC NTC Innegivare
+  - platform: template
+    name: "NTC Inne Temp (Riktig/ADC)"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    # Värdet är °C * 100
+    lambda: 'return (float)id(internal_sensor_block).results[2] / 100.0;'
+
+  # 0x00FA (Reg 250/251) - PIC Firmware Version
+  read_input_register:
+    id: fw_version_read
+    address: 0x00FA # Startar vid PIC Register 250
+    register_count: 1
+    
+  - platform: template
+    name: "PIC Firmware Version"
+    unit_of_measurement: ""
+    # Version: Major i MSB, Minor i LSB (WORD)
+    lambda: 'return id(fw_version_read).results[0] == 0 ? "0.0" : String(id(fw_version_read).results[0] >> 8) + "." + String(id(fw_version_read).results[0] & 0xFF);'
+
+
+# ----------------------------------------------------
+# MODBUS KONTROLLER (READ/WRITE - Holding Registers: 0x0XXX)
+# ----------------------------------------------------
+modbus_controller:
+  id: pic_control_controller
+  modbus_id: modbus_main
+  setup_delay: 3s
+  update_interval: 60s
+
+  # 1. Spoofing Mål (PIC Reg 231+)
+  number:
+    - platform: modbus_controller
+      name: "Spoofad Ute Temperatur Mål"
+      address: 0x00E7 # Motsvarar PIC Register 231
+      register_type: holding
+      value_type: UWORD
+      unit_of_measurement: "°C"
+      icon: "mdi:thermometer-chevron-down"
+      min_value: -30.0
+      max_value: 30.0
+      step: 0.01
+      # PIC lagrar värdet som int * 100.
+      lambda:
+        getter: 'return x / 100.0;'
+        setter: 'return x * 100;'
+
+  # 2. I2C Enable/Disable (PIC Reg 241)
+  switch:
+    - platform: modbus_controller
+      name: "I2C Kommunikation Aktiv"
+      address: 0x00F1 # Motsvarar PIC Register 241
+      register_type: holding
+      value_type: UWORD
+      icon: "mdi:power-plug"
+      # Modbus skickar 1 för ON, 0 för OFF
+      write_parameters:
+        lambda: 'return x ? 1 : 0;'
